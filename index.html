@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TensorFlow.js Handwritten Digit Recognition</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.0.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis@1.0.2/dist/tfjs-vis.umd.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        #previewCanvas {
+            border: 2px solid #ccc;
+            margin: 10px 0;
+        }
+
+        #drawingCanvas {
+            border: 2px solid #333;
+            margin: 10px 0;
+            cursor: crosshair;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+
+        .success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        #imageUploadInput {
+            margin: 20px 0;
+        }
+
+        #confidenceDisplay {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+
+        .canvas-controls {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #f5f5f5;
+        }
+
+        .canvas-controls button {
+            margin: 0 5px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+
+        .section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            width: 100%;
+            max-width: 600px;
+        }
+
+        h2 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Handwritten Digit Recognition</h1>
+        <div id="statusMessage" class="status"></div>
+
+        <div class="section">
+            <h2>Option 1: Upload Image</h2>
+            <input type="file" id="imageUploadInput" accept="image/*">
+            <canvas id="previewCanvas"></canvas>
+        </div>
+
+        <div class="section">
+            <h2>Option 2: Draw Digit</h2>
+            <canvas id="drawingCanvas"></canvas>
+            <div class="canvas-controls">
+                <button id="clearCanvas">Clear Canvas</button>
+                <button id="predictDrawing">Predict Drawing</button>
+            </div>
+        </div>
+
+        <div id="predictionResult"></div>
+        <div id="confidenceDisplay"></div>
+    </div>
+
+    <script>
+        let model;
+        const IMAGE_SIZE = 28;
+        const previewCanvas = document.getElementById('previewCanvas');
+        const drawingCanvas = document.getElementById('drawingCanvas');
+        const ctx = previewCanvas.getContext('2d');
+        const drawingCtx = drawingCanvas.getContext('2d');
+        const statusMessage = document.getElementById('statusMessage');
+        const predictionResult = document.getElementById('predictionResult');
+        const confidenceDisplay = document.getElementById('confidenceDisplay');
+
+        // Set canvas sizes
+        previewCanvas.width = 280;
+        previewCanvas.height = 280;
+        drawingCanvas.width = 280;
+        drawingCanvas.height = 280;
+
+        // Drawing variables
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        // Setup drawing canvas
+        drawingCtx.strokeStyle = 'black';
+        drawingCtx.lineWidth = 20;
+        drawingCtx.lineCap = 'round';
+        drawingCtx.lineJoin = 'round';
+
+        // Drawing event listeners
+        drawingCanvas.addEventListener('mousedown', startDrawing);
+        drawingCanvas.addEventListener('mousemove', draw);
+        drawingCanvas.addEventListener('mouseup', stopDrawing);
+        drawingCanvas.addEventListener('mouseout', stopDrawing);
+        document.getElementById('clearCanvas').addEventListener('click', clearDrawingCanvas);
+        document.getElementById('predictDrawing').addEventListener('click', predictDrawing);
+
+        // Drawing functions
+        function startDrawing(e) {
+            isDrawing = true;
+            [lastX, lastY] = [e.offsetX, e.offsetY];
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            drawingCtx.beginPath();
+            drawingCtx.moveTo(lastX, lastY);
+            drawingCtx.lineTo(e.offsetX, e.offsetY);
+            drawingCtx.stroke();
+            [lastX, lastY] = [e.offsetX, e.offsetY];
+        }
+
+        function stopDrawing() {
+            isDrawing = false;
+        }
+
+        function clearDrawingCanvas() {
+            drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+            predictionResult.textContent = '';
+            confidenceDisplay.textContent = '';
+        }
+
+        async function predictDrawing() {
+            if (!model) {
+                setStatus('Please wait for the model to load', 'error');
+                return;
+            }
+
+            try {
+                // Create a temporary canvas for preprocessing
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = IMAGE_SIZE;
+                tempCanvas.height = IMAGE_SIZE;
+                const tempCtx = tempCanvas.getContext('2d');
+
+                // Draw the content scaled down to 28x28
+                tempCtx.fillStyle = 'white';
+                tempCtx.fillRect(0, 0, IMAGE_SIZE, IMAGE_SIZE);
+                tempCtx.drawImage(drawingCanvas, 0, 0, IMAGE_SIZE, IMAGE_SIZE);
+
+                // Process the drawing and get prediction
+                const processedImage = await preprocessImage(tempCanvas);
+                const predictions = model.predict(processedImage);
+                const predictedArray = await predictions.data();
+                const predictedClass = predictions.argMax(-1).dataSync()[0];
+
+                // Get confidence score
+                const confidence = predictedArray[predictedClass] * 100;
+
+                // Display results
+                predictionResult.textContent = `Predicted digit: ${predictedClass}`;
+                confidenceDisplay.textContent = `Confidence: ${confidence.toFixed(2)}%`;
+
+                // Clean up tensors
+                processedImage.dispose();
+                predictions.dispose();
+            } catch (error) {
+                setStatus('Error processing drawing: ' + error.message, 'error');
+            }
+        }
+
+        async function loadModel() {
+            try {
+                setStatus('Loading model...', 'normal');
+                model = await tf.loadLayersModel('model.json');
+                setStatus('Model loaded successfully!', 'success');
+            } catch (error) {
+                setStatus('Error loading model: ' + error.message, 'error');
+            }
+        }
+
+        function setStatus(message, type) {
+            statusMessage.textContent = message;
+            statusMessage.className = 'status ' + type;
+        }
+
+        async function preprocessImage(image) {
+            return tf.tidy(() => {
+                // Create a tensor from the image
+                let tensor = tf.browser.fromPixels(image, 1);
+
+                // Resize if needed
+                if (tensor.shape[0] !== IMAGE_SIZE || tensor.shape[1] !== IMAGE_SIZE) {
+                    tensor = tf.image.resizeBilinear(tensor, [IMAGE_SIZE, IMAGE_SIZE]);
+                }
+
+                // Normalize and invert if needed
+                let normalized = tensor.toFloat().div(255.0);
+
+                // Calculate mean pixel value
+                const mean = normalized.mean().dataSync()[0];
+
+                // Invert colors if it's a light background
+                if (mean > 0.5) {
+                    normalized = tf.scalar(1).sub(normalized);
+                }
+
+                // Enhance contrast
+                normalized = normalized.sub(normalized.min())
+                    .div(normalized.max().sub(normalized.min()));
+
+                // Add batch dimension and ensure proper shape
+                return normalized.expandDims(0);
+            });
+        }
+
+        async function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            if (!model) {
+                setStatus('Please wait for the model to load', 'error');
+                return;
+            }
+
+            try {
+                const img = new Image();
+                img.src = URL.createObjectURL(file);
+
+                img.onload = async () => {
+                    // Clear previous results
+                    predictionResult.textContent = '';
+                    confidenceDisplay.textContent = '';
+
+                    // Draw original image on canvas (scaled to fit)
+                    ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+                    const scale = Math.min(previewCanvas.width / img.width, previewCanvas.height / img.height);
+                    const x = (previewCanvas.width - img.width * scale) / 2;
+                    const y = (previewCanvas.height - img.height * scale) / 2;
+                    ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+
+                    // Process image and get prediction
+                    const processedImage = await preprocessImage(img);
+                    const predictions = model.predict(processedImage);
+                    const predictedArray = await predictions.data();
+                    const predictedClass = predictions.argMax(-1).dataSync()[0];
+
+                    // Get confidence score
+                    const confidence = predictedArray[predictedClass] * 100;
+
+                    // Display results
+                    predictionResult.textContent = `Predicted digit: ${predictedClass}`;
+                    confidenceDisplay.textContent = `Confidence: ${confidence.toFixed(2)}%`;
+
+                    // Clean up tensors
+                    processedImage.dispose();
+                    predictions.dispose();
+                };
+
+                img.onerror = () => {
+                    setStatus('Error loading image', 'error');
+                };
+            } catch (error) {
+                setStatus('Error processing image: ' + error.message, 'error');
+            }
+        }
+
+        window.onload = () => {
+            document.getElementById('imageUploadInput').addEventListener('change', handleImageUpload);
+            loadModel();
+        };
+    </script>
+</body>
+
+</html>
